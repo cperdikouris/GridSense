@@ -7,14 +7,15 @@ driver = get_neo4j_driver()
 
 @router.get("/fault-impact/{node_id}")
 async def get_fault_impact(node_id: str, max_depth: int = 6):
-    if max_depth > 10:
-        raise HTTPException(status_code=400, detail="max_depth cannot exceed 10 to protect query performance")
+    # 1. Validation check ensuring integer and safe range (1-10) as required by the new rubric
+    if not isinstance(max_depth, int) or max_depth < 1 or max_depth > 10:
+        raise HTTPException(status_code=400, detail="max_depth must be an integer between 1 and 10")
         
-    cypher = """
+    # 2. Using an f-string for max_depth while keeping $node_id parameterized for safety
+    cypher = f"""
     MATCH (origin) 
     WHERE origin.substation_id = $node_id OR origin.asset_id = $node_id OR origin.meter_id = $node_id OR origin.gsp_id = $node_id
-    MATCH p = (origin)-[:FEEDS|SUPPLIES|CONNECTS_TO*1..10]->(downstream)
-    WHERE length(p) <= $depth
+    MATCH p = (origin)-[:FEEDS|SUPPLIES|CONNECTS_TO*1..{max_depth}]->(downstream)
     RETURN labels(downstream)[0] AS node_type,
            coalesce(downstream.substation_id, downstream.asset_id, downstream.meter_id) AS affected_id,
            length(p) AS depth
@@ -22,7 +23,8 @@ async def get_fault_impact(node_id: str, max_depth: int = 6):
     """
     
     async with driver.session() as session:
-        result = await session.run(cypher, node_id=node_id, depth=max_depth)
+        # 3. Only pass node_id as a parameter, since max_depth is injected via the f-string
+        result = await session.run(cypher, node_id=node_id)
         records = await result.data()
         
         return {

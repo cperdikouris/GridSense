@@ -1,9 +1,9 @@
 fastapi
 uvicorn[standard]
-cassandra-driver
-neo4j
-motor
 asyncpg
+motor
+neo4j
+cassandra-driver
 redis
 pydantic
 python-dotenv
