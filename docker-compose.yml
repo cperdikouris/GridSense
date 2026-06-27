@@ -3,34 +3,88 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15
-    environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: gridsense
+    env_file: .env
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
 
-  mongodb:
+  mongo:
     image: mongo:6
     ports:
       - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+
+  neo4j:
+    image: neo4j:5
+    env_file: .env
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7474"]
+      interval: 10s
+      retries: 5
+      start_period: 15s
 
   cassandra:
     image: cassandra:4.1
     ports:
       - "9042:9042"
-    environment:
-      CASSANDRA_CLUSTER_NAME: "GridCluster"
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 15s
+      retries: 5
+      start_period: 30s 
 
-  neo4j:
-    image: neo4j:5
-    environment:
-      NEO4J_AUTH: neo4j/password
-    ports:
-      - "7474:7474" 
-      - "7687:7687" 
-    
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./cql/init.cql:/init.cql
+    command: cqlsh cassandra -f /init.cql
+
+  seed:
+    build: .
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+    command: python scripts/seed.py
+
+  api:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
