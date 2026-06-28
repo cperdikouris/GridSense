@@ -27,3 +27,18 @@ async def create_equipment(payload: dict = Body(...)):
         
     await collection.insert_one(payload.copy())
     return {"status": "success", "message": f"Equipment {payload['asset_id']} created."}
+
+@router.patch("/{asset_id}")
+async def update_equipment(asset_id: str, payload: dict = Body(...)):
+    collection = get_collection()
+    
+    # Use $set to only update the fields provided in the payload
+    result = await collection.update_one(
+        {"asset_id": asset_id},
+        {"$set": payload}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Equipment not found")
+        
+    return {"status": "success", "message": f"Equipment {asset_id} updated."}

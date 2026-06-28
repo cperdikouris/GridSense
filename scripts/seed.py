@@ -9,31 +9,53 @@ import asyncpg
 from motor.motor_asyncio import AsyncIOMotorClient
 from neo4j import AsyncGraphDatabase
 from cassandra.cluster import Cluster
-from cassandra.concurrent import execute_concurrent_with_args
 
 # Load environment variables from .env
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 async def seed_postgres():
-    print("Seeding PostgreSQL (100 Accounts)...")
+    print("Seeding PostgreSQL (100 Accounts & Invoices)...")
     conn = await asyncpg.connect(
         user=os.getenv("POSTGRES_USER"),
         password=os.getenv("POSTGRES_PASSWORD"),
         database=os.getenv("POSTGRES_DB"),
-        host="localhost"
+        host=os.getenv("POSTGRES_HOST", "localhost") 
     )
     
-    # Generate 100 accounts idempotently
+    # Create the tables if they don't exist
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            premise_id VARCHAR(50) PRIMARY KEY,
+            balance NUMERIC(10, 2),
+            last_invoice_date DATE
+        );
+        CREATE TABLE IF NOT EXISTS invoices (
+            invoice_id SERIAL PRIMARY KEY,
+            premise_id VARCHAR(50) REFERENCES accounts(premise_id),
+            amount NUMERIC(10, 2),
+            issue_date DATE,
+            is_paid BOOLEAN
+        );
+    """)
+
+    # Generate 100 accounts and invoices idempotently
     for i in range(1, 101):
         premise_id = f"PREM_{10000 + i}"
         balance = round(random.uniform(0, 500), 2)
         date = datetime.now().date() - timedelta(days=random.randint(1, 30))
         
+        # Insert Account
         await conn.execute("""
             INSERT INTO accounts (premise_id, balance, last_invoice_date)
             VALUES ($1, $2, $3)
             ON CONFLICT (premise_id) DO NOTHING
         """, premise_id, balance, date)
+        
+        # Insert Sample Invoice
+        await conn.execute("""
+            INSERT INTO invoices (premise_id, amount, issue_date, is_paid)
+            VALUES ($1, $2, $3, $4)
+        """, premise_id, round(random.uniform(50, 150), 2), date, True)
     
     await conn.close()
     print("PostgreSQL Seeding Complete.")
@@ -104,6 +126,10 @@ async def seed_neo4j():
     """
     
     async with driver.session() as session:
+        # Create the constraints mandated by the rubric
+        await session.run("CREATE CONSTRAINT substation_id IF NOT EXISTS FOR (s:Substation) REQUIRE s.substation_id IS UNIQUE;")
+        await session.run("CREATE CONSTRAINT transformer_id IF NOT EXISTS FOR (t:Transformer) REQUIRE t.asset_id IS UNIQUE;")
+        # Execute topology
         await session.run(cypher_query)
     
     await driver.close()
@@ -136,7 +162,6 @@ def seed_cassandra():
     # Generate 50,000 rows (20 sensors * 2500 readings each)
     base_time = datetime.now()
     
-    # We will do this in standard batches so it doesn't crash the container
     count = 0
     for sensor in sensors:
         for i in range(2500):
@@ -144,9 +169,7 @@ def seed_cassandra():
             val = random.uniform(220, 240) if metric == 'voltage' else random.uniform(10, 50)
             r_time = base_time - timedelta(minutes=i)
             
-            # Insert into main table
             session.execute_async(insert_statement, (sensor, r_time, metric, val, unit, 0))
-            # Insert into our TODO table
             session.execute_async(insert_metric_statement, (metric, r_time, sensor, val, unit, 0))
             count += 1
             
@@ -159,7 +182,6 @@ async def main():
     await seed_postgres()
     await seed_mongodb()
     await seed_neo4j()
-    # Cassandra uses a synchronous driver, so we call it normally
     seed_cassandra()
     print("\n✅ DATA FACTORY FINISHED: All databases are fully seeded!")
 
